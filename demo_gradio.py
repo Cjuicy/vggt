@@ -40,6 +40,7 @@ model = model.to(device)
 
 # -------------------------------------------------------------------------
 # 1) Core model inference
+# 1) 核心模型推理
 # -------------------------------------------------------------------------
 def run_model(target_dir, model) -> dict:
     """
@@ -48,6 +49,7 @@ def run_model(target_dir, model) -> dict:
     print(f"Processing images from {target_dir}")
 
     # Device check
+    # 设备检查
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if not torch.cuda.is_available():
         raise ValueError("CUDA is not available. Check your environment.")
