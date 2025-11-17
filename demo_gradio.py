@@ -55,6 +55,7 @@ def run_model(target_dir, model) -> dict:
         raise ValueError("CUDA is not available. Check your environment.")
 
     # Move model to device
+    # 将模型移动到设备
     model = model.to(device)
     model.eval()
 
