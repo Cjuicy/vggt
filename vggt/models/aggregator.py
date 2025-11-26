@@ -47,6 +47,31 @@ class Aggregator(nn.Module):
         qk_norm (bool): Whether to apply QK normalization.
         rope_freq (int): Base frequency for rotary embedding. -1 to disable.
         init_values (float): Init scale for layer scale.
+
+        
+    这个 聚合器 模块实现了交替注意力机制，用于多帧图像的特征聚合。(详见看论文)
+    AA Transformer(Alternating Attention Transformer) 通过在帧内和全局范围内交替应用注意力机制，有效地捕捉时空特征。
+
+    记住要设置 model.train() 以启用梯度检查点以减少内存使用。
+
+    参数:
+        img_size (int): 图像的像素大小。
+        patch_size (int): PatchEmbed 的每个补丁的大小。
+        embed_dim (int): 令牌嵌入的维度。
+        depth (int): 块的数量。
+        num_heads (int): 注意力头的数量。
+        mlp_ratio (float): MLP 隐藏维度与嵌入维度的比率。
+        num_register_tokens (int): 注册令牌的数量。
+        block_fn (nn.Module): 用于注意力的块类型（默认为 Block）。
+        qkv_bias (bool): 是否在 QKV 投影中包含偏置。
+        proj_bias (bool): 输出投影中是否包含偏置。
+        ffn_bias (bool): MLP 层中是否包含偏置。
+        patch_embed (str): Patch embed 的类型。例如 "conv" 或 "dinov2_vitl14_reg"。
+        aa_order (list[str]): 交替注意力的顺序，例如 ["frame", "global"]。
+        aa_block_size (int): 在切换之前每种注意力类型下分组的块数。如果不必要，设置为 1。
+        qk_norm (bool): 是否应用 QK 正则化。
+        rope_freq (int): 旋转位置嵌入的基频率。-1 表示禁用。
+        init_values (float): 层缩放的初始值。
     """
 
     def __init__(

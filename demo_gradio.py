@@ -29,100 +29,121 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 print("Initializing and loading VGGT model...")
 # model = VGGT.from_pretrained("facebook/VGGT-1B")  # another way to load the model
 
+# -------------------------------------------------------------------------
+# 1) model initialization + loading weights
+# 1) 模型初始化 + 加载权重
+# -------------------------------------------------------------------------
 model = VGGT()
 _URL = "https://huggingface.co/facebook/VGGT-1B/resolve/main/model.pt"
 model.load_state_dict(torch.hub.load_state_dict_from_url(_URL))
-
-
 model.eval()
 model = model.to(device)
 
 
 # -------------------------------------------------------------------------
-# 1) Core model inference
+# 2) Core model inference
+# 2) 核心模型推理
 # -------------------------------------------------------------------------
 def run_model(target_dir, model) -> dict:
     """
     Run the VGGT model on images in the 'target_dir/images' folder and return predictions.
+    运行VGGT模型，对'target_dir/images'文件夹中的图像进行处理，并返回预测结果。
+    参数:
+        target_dir (str): 包含图像的目标目录路径。
+        model (VGGT): 预加载的VGGT模型实例。
     """
     print(f"Processing images from {target_dir}")
 
     # Device check
+    # 检查设备
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if not torch.cuda.is_available():
         raise ValueError("CUDA is not available. Check your environment.")
 
     # Move model to device
+    # 将模型移动到设备
     model = model.to(device)
     model.eval()
 
     # Load and preprocess images
-    image_names = glob.glob(os.path.join(target_dir, "images", "*"))
-    image_names = sorted(image_names)
-    print(f"Found {len(image_names)} images")
+    # 加载和预处理图像
+    image_names = glob.glob(os.path.join(target_dir, "images", "*")) # os构造路径, glob.golb() 参照匹配该模式的所有文件
+    image_names = sorted(image_names)                                # 按文件名排序,确保顺序一致
+    print(f"Found {len(image_names)} images")                       
     if len(image_names) == 0:
         raise ValueError("No images found. Check your upload.")
 
-    images = load_and_preprocess_images(image_names).to(device)
-    print(f"Preprocessed images shape: {images.shape}")
+    images = load_and_preprocess_images(image_names).to(device)      # 加载和预处理图像(vggt自己封装的)
+    print(f"Preprocessed images shape: {images.shape}")              # 打印预处理后图像的形状
 
     # Run inference
+    # 推理
     print("Running inference...")
-    dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16
+    dtype = torch.bfloat16 if torch.cuda.get_device_capability()[0] >= 8 else torch.float16 #新的半精度格式,google提出,效果更好
 
-    with torch.no_grad():
+    with torch.no_grad():                                           #设置为推理模式,不计算梯度(即不进行反向传播)
         with torch.cuda.amp.autocast(dtype=dtype):
-            predictions = model(images)
+            predictions = model(images)                             #这样我们就有了推理结果
 
     # Convert pose encoding to extrinsic and intrinsic matrices
-    print("Converting pose encoding to extrinsic and intrinsic matrices...")
-    extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:])
-    predictions["extrinsic"] = extrinsic
-    predictions["intrinsic"] = intrinsic
+    # 将位姿编码转换为外参和内参矩阵
+    print("Converting pose encoding to extrinsic and intrinsic matrices...") # 转换位姿编码为外参和内参矩阵 
+    extrinsic, intrinsic = pose_encoding_to_extri_intri(predictions["pose_enc"], images.shape[-2:]) #pred_dict['pose_enc']:编好码的姿态向量 images.shape[-2:]:图像的高和宽,相机的内参与图像的大小是强相关的
+    predictions["extrinsic"] = extrinsic                                    #通过VGGT自己的函数,将位姿编码转换为外参和内参矩阵
+    predictions["intrinsic"] = intrinsic                                    #存储外参和内参矩阵
 
     # Convert tensors to numpy
-    for key in predictions.keys():
-        if isinstance(predictions[key], torch.Tensor):
-            predictions[key] = predictions[key].cpu().numpy().squeeze(0)  # remove batch dimension
-    predictions['pose_enc_list'] = None # remove pose_enc_list
+    # 将张量转换为NumPy
+    for key in predictions.keys():                                  #遍历predictions字典中的每个键
+        if isinstance(predictions[key], torch.Tensor):              #如果检测是张量的话,就将张量转为NumPy数组
+            predictions[key] = predictions[key].cpu().numpy().squeeze(0)  # remove batch dimension   将张量转为NumPy数组
+    predictions['pose_enc_list'] = None # remove pose_enc_list  # 删除pose_enc_list键值对,节省空间,释放内存
 
     # Generate world points from depth map
-    print("Computing world points from depth map...")
-    depth_map = predictions["depth"]  # (S, H, W, 1)
-    world_points = unproject_depth_map_to_point_map(depth_map, predictions["extrinsic"], predictions["intrinsic"])
-    predictions["world_points_from_depth"] = world_points
+    # 从深度图生成世界点
+    print("Computing world points from depth map...")               # 从深度图计算世界点
+    depth_map = predictions["depth"]  # (S, H, W, 1)                # 再预测的结果中有深度图
+    world_points = unproject_depth_map_to_point_map(depth_map, predictions["extrinsic"], predictions["intrinsic"])  #通过自己封装的函数,通过深度图和外参和内参矩阵,生成世界点
+    predictions["world_points_from_depth"] = world_points           # 存储世界点
 
-    # Clean up
-    torch.cuda.empty_cache()
-    return predictions
+    # Clean up                              
+    # 清理          
+    torch.cuda.empty_cache()                                          # 清理缓存
+    return predictions                                                # 返回预测结果
 
 
 # -------------------------------------------------------------------------
 # 2) Handle uploaded video/images --> produce target_dir + images
+# 2) 处理上传的视频/图片 --> 生成目标目录 + 图片
 # -------------------------------------------------------------------------
 def handle_uploads(input_video, input_images):
     """
     Create a new 'target_dir' + 'images' subfolder, and place user-uploaded
     images or extracted frames from video into it. Return (target_dir, image_paths).
+    生成一个新的'target_dir' + 'images'子文件夹，并将用户上传的图像或从视频中提取的帧放入其中。返回(target_dir, image_paths)。
     """
-    start_time = time.time()
-    gc.collect()
-    torch.cuda.empty_cache()
+    #内存管理和性能优化(在处理新任务前释放内存和显存,以确保有足够的资源)
+    start_time = time.time()                                        # 记录开始时间
+    gc.collect()                                                    # 释放内存
+    torch.cuda.empty_cache()                                        # 释放显存
 
     # Create a unique folder name
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-    target_dir = f"input_images_{timestamp}"
-    target_dir_images = os.path.join(target_dir, "images")
+    # 创建一个唯一的文件夹名称
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")         # 获取当前时间戳
+    target_dir = f"input_images_{timestamp}"                        # 创建目标文件夹名称
+    target_dir_images = os.path.join(target_dir, "images")          # 创建目标文件夹中的images子文件夹路径
 
     # Clean up if somehow that folder already exists
-    if os.path.exists(target_dir):
-        shutil.rmtree(target_dir)
-    os.makedirs(target_dir)
-    os.makedirs(target_dir_images)
+    # 如果 somehow 该文件夹已经存在，则进行清理
+    if os.path.exists(target_dir):                                  # 检查目标文件夹是否存在
+        shutil.rmtree(target_dir)                                   # 删除目标文件夹  
+    os.makedirs(target_dir)                                         # 创建目标文件夹      
+    os.makedirs(target_dir_images)                                  # 创建目标文件夹中的images子文件夹   
 
-    image_paths = []
+    image_paths = []                                                # 用于存储图像路径的列表  
 
     # --- Handle images ---
+    # --- 处理图像 ---
     if input_images is not None:
         for file_data in input_images:
             if isinstance(file_data, dict) and "name" in file_data:
@@ -134,6 +155,7 @@ def handle_uploads(input_video, input_images):
             image_paths.append(dst_path)
 
     # --- Handle video ---
+    # --- 处理视频 ---
     if input_video is not None:
         if isinstance(input_video, dict) and "name" in input_video:
             video_path = input_video["name"]
@@ -158,6 +180,7 @@ def handle_uploads(input_video, input_images):
                 video_frame_num += 1
 
     # Sort final images for gallery
+    # 对最终的图像进行排序，以显示在画廊中
     image_paths = sorted(image_paths)
 
     end_time = time.time()
@@ -167,12 +190,16 @@ def handle_uploads(input_video, input_images):
 
 # -------------------------------------------------------------------------
 # 3) Update gallery on upload
+# 3) 更新上传的图片
 # -------------------------------------------------------------------------
 def update_gallery_on_upload(input_video, input_images):
     """
     Whenever user uploads or changes files, immediately handle them
     and show in the gallery. Return (target_dir, image_paths).
     If nothing is uploaded, returns "None" and empty list.
+    
+    无论何时用户上传或更改文件，立即处理它们并在画廊中显示。返回(target_dir, image_paths)。
+    如果没有上传任何内容，则返回“None”和空列表。
     """
     if not input_video and not input_images:
         return None, None, None, None
@@ -182,6 +209,7 @@ def update_gallery_on_upload(input_video, input_images):
 
 # -------------------------------------------------------------------------
 # 4) Reconstruction: uses the target_dir plus any viz parameters
+# 4) 3D重建：使用目标目录和任何可视化参数
 # -------------------------------------------------------------------------
 def gradio_demo(
     target_dir,
@@ -195,6 +223,7 @@ def gradio_demo(
 ):
     """
     Perform reconstruction using the already-created target_dir/images.
+    使用已创建的target_dir/images进行重建。
     """
     if not os.path.isdir(target_dir) or target_dir == "None":
         return None, "No valid target directory found. Please upload first.", None, None
@@ -204,6 +233,7 @@ def gradio_demo(
     torch.cuda.empty_cache()
 
     # Prepare frame_filter dropdown
+    # 准备frame_filter下拉菜单
     target_dir_images = os.path.join(target_dir, "images")
     all_files = sorted(os.listdir(target_dir_images)) if os.path.isdir(target_dir_images) else []
     all_files = [f"{i}: {filename}" for i, filename in enumerate(all_files)]
@@ -214,20 +244,24 @@ def gradio_demo(
         predictions = run_model(target_dir, model)
 
     # Save predictions
+    # 保存预测
     prediction_save_path = os.path.join(target_dir, "predictions.npz")
     np.savez(prediction_save_path, **predictions)
 
     # Handle None frame_filter
+    # 处理None frame_filter
     if frame_filter is None:
         frame_filter = "All"
 
     # Build a GLB file name
+    # 构建GLB文件名
     glbfile = os.path.join(
         target_dir,
         f"glbscene_{conf_thres}_{frame_filter.replace('.', '_').replace(':', '').replace(' ', '_')}_maskb{mask_black_bg}_maskw{mask_white_bg}_cam{show_cam}_sky{mask_sky}_pred{prediction_mode.replace(' ', '_')}.glb",
     )
 
     # Convert predictions to GLB
+    # 将预测转换为GLB
     glbscene = predictions_to_glb(
         predictions,
         conf_thres=conf_thres,
@@ -242,6 +276,7 @@ def gradio_demo(
     glbscene.export(file_obj=glbfile)
 
     # Cleanup
+    # 清理
     del predictions
     gc.collect()
     torch.cuda.empty_cache()
@@ -255,10 +290,12 @@ def gradio_demo(
 
 # -------------------------------------------------------------------------
 # 5) Helper functions for UI resets + re-visualization
+# 5) 辅助函数：用于UI重置和重新可视化
 # -------------------------------------------------------------------------
 def clear_fields():
     """
     Clears the 3D viewer, the stored target_dir, and empties the gallery.
+    清空3D查看器、存储的target_dir和画廊。
     """
     return None
 
@@ -266,6 +303,7 @@ def clear_fields():
 def update_log():
     """
     Display a quick log message while waiting.
+    显示一个快速日志消息，等待。
     """
     return "Loading and Reconstructing..."
 
@@ -276,9 +314,11 @@ def update_visualization(
     """
     Reload saved predictions from npz, create (or reuse) the GLB for new parameters,
     and return it for the 3D viewer. If is_example == "True", skip.
+    从npz重新加载保存的预测，使用新参数创建（或重用）GLB，并将其返回给3D查看器。如果is_example == "True"，则跳过。
     """
 
     # If it's an example click, skip as requested
+    # 如果是示例点击，则按要求跳过
     if is_example == "True":
         return None, "No reconstruction available. Please click the Reconstruct button first."
 
@@ -328,6 +368,7 @@ def update_visualization(
 
 # -------------------------------------------------------------------------
 # Example images
+# 样例图片
 # -------------------------------------------------------------------------
 
 great_wall_video = "examples/videos/great_wall.mp4"
@@ -342,6 +383,7 @@ pyramid_video = "examples/videos/pyramid.mp4"
 
 # -------------------------------------------------------------------------
 # 6) Build Gradio UI
+# 6) 构建Gradio UI
 # -------------------------------------------------------------------------
 theme = gr.themes.Ocean()
 theme.set(
@@ -567,6 +609,7 @@ with gr.Blocks(
 
     # -------------------------------------------------------------------------
     # Real-time Visualization Updates
+    # 时时 可视化更新
     # -------------------------------------------------------------------------
     conf_thres.change(
         update_visualization,
@@ -676,6 +719,7 @@ with gr.Blocks(
 
     # -------------------------------------------------------------------------
     # Auto-update gallery whenever user uploads or changes their files
+    # 自动更新 画廊无论何时用户上传或更改他们的文件
     # -------------------------------------------------------------------------
     input_video.change(
         fn=update_gallery_on_upload,
