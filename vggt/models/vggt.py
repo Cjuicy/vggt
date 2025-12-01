@@ -4,6 +4,29 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+
+"""
+        ┌──────────────────────────────────┐
+        │        VGGT Aggregator Backbone  │
+        │  (24-layer Alternating Attention)│
+        │                                  │
+        │  输入：patch tokens + camera token│
+        │        + register token + RoPE   │
+        │  输出：output_list (24层特征)     │
+        └──────────────────────────────────┘
+                        │
+                        ▼
+        ┌──────────────────────────────────┐
+        │           4 个任务头             │
+        │ camera_head   ← 使用 final_features│
+        │ depth_head    ← 使用 final_features│
+        │ point_head    ← 使用 final_features│
+        │ track_head    ← 使用 backbone 全部层│
+        └──────────────────────────────────┘
+在图像经过了骨干网络之后,对于最后的结果,使用4个任务头,来输出相应的预测结果
+"""
+
+
 import torch
 import torch.nn as nn
 from huggingface_hub import PyTorchModelHubMixin  # used for model hub
@@ -20,8 +43,10 @@ class VGGT(nn.Module, PyTorchModelHubMixin):
         # 继承父类的初始化方法
         super().__init__()
 
+        # 初始化了VGGT的骨干模型
         self.aggregator = Aggregator(img_size=img_size, patch_size=patch_size, embed_dim=embed_dim)
-
+        
+        # 初始化了VGGT的4种heads(前3个头使用的都是aggregator最后一层输出,只有track Head 使用所有层的特征)
         self.camera_head = CameraHead(dim_in=2 * embed_dim) if enable_camera else None
         self.point_head = DPTHead(dim_in=2 * embed_dim, output_dim=4, activation="inv_log", conf_activation="expp1") if enable_point else None
         self.depth_head = DPTHead(dim_in=2 * embed_dim, output_dim=2, activation="exp", conf_activation="expp1") if enable_depth else None
